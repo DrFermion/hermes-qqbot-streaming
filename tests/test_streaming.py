@@ -27,6 +27,7 @@ from hermes_qqbot_streaming.streaming import (  # noqa: E402
     STREAM_STATE_GENERATING,
     _strip_frame_cursor,
     _strip_progress_overlay,
+    _undisplayed_tail,
 )
 
 CHAT = "OPENID_CHAT"
@@ -186,37 +187,52 @@ class TestMonotonicFrames:
         assert len({b["msg_seq"] for b in bodies}) == 1  # ONE message, no seal-and-reopen
 
     @pytest.mark.asyncio
-    async def test_diverged_frame_seals_and_opens_a_fresh_stream(self):
+    async def test_diverged_frame_grows_the_live_message_instead_of_reopening(self):
+        """A frame that does not extend the streamed text is APPENDED, never used to open a new
+        message: sealing and reopening repeats everything the client already shows, so the reply
+        arrives twice (the second copy longer than the first)."""
         adapter = _adapter()
         recorder = _Recorder()
         adapter._api_request = recorder
 
-        with mock.patch("hermes_qqbot_streaming.streaming.random.randrange", side_effect=[11, 22]):
-            await adapter.send_stream_frame("答案第一部分", chat_id=CHAT, reply_to=MSG_ID)
-            adapter._stream_states[CHAT].last_sent_at = 0.0
-            assert await adapter.send_stream_frame("完全不同的另一段", chat_id=CHAT, reply_to=MSG_ID) is True
+        # What the client shows: interim text plus a prefix of the reply.
+        await adapter.send_stream_frame("先看一眼日志：最终答案的第一句", chat_id=CHAT, reply_to=MSG_ID)
+        adapter._stream_states[CHAT].last_sent_at = 0.0
+        # The consumer adopts the authoritative final, which DROPS that interim text.
+        assert await adapter.send_stream_frame("最终答案的第一句，还有第二句", chat_id=CHAT,
+                                               reply_to=MSG_ID) is True
 
-        first, seal, fresh = recorder.bodies
-        assert first["msg_seq"] == seal["msg_seq"] == 11
-        assert seal["input_state"] == STREAM_STATE_DONE and seal["content_raw"] == "答案第一部分"
-        assert fresh["msg_seq"] == 22 and fresh["index"] == 1
-        assert "stream_msg_id" not in fresh
+        bodies = recorder.bodies
+        assert len(bodies) == 2                       # still ONE message
+        assert len({b["msg_seq"] for b in bodies}) == 1
+        assert bodies[1]["content_raw"] == "先看一眼日志：最终答案的第一句，还有第二句"
+        # Only the never-displayed part was appended; the shared prefix is not repeated.
+        assert bodies[1]["content_raw"].count("最终答案的第一句") == 1
 
     @pytest.mark.asyncio
-    async def test_diverged_finalize_pushes_content_then_seals(self):
+    async def test_diverged_finalize_closes_the_same_message(self):
         adapter = _adapter()
         recorder = _Recorder()
         adapter._api_request = recorder
 
-        with mock.patch("hermes_qqbot_streaming.streaming.random.randrange", side_effect=[31, 32]):
-            await adapter.send_stream_frame("开头", chat_id=CHAT, reply_to=MSG_ID)
-            adapter._stream_states[CHAT].last_sent_at = 0.0
-            assert await adapter.send_stream_frame("改头换面", chat_id=CHAT, reply_to=MSG_ID, finalize=True) is True
+        await adapter.send_stream_frame("查一下：答案开头", chat_id=CHAT, reply_to=MSG_ID)
+        adapter._stream_states[CHAT].last_sent_at = 0.0
+        assert await adapter.send_stream_frame("答案开头，以及结尾", chat_id=CHAT, reply_to=MSG_ID,
+                                               finalize=True) is True
 
-        tail = recorder.bodies[-2:]
-        assert [b["input_state"] for b in tail] == [STREAM_STATE_GENERATING, STREAM_STATE_DONE]
-        assert tail[0]["content_raw"] == tail[1]["content_raw"] == "改头换面"
-        assert len({b["msg_seq"] for b in tail}) == 1
+        bodies = recorder.bodies
+        assert [b["input_state"] for b in bodies] == [STREAM_STATE_GENERATING, STREAM_STATE_DONE]
+        assert bodies[-1]["content_raw"] == "查一下：答案开头，以及结尾"
+        assert len({b["msg_seq"] for b in bodies}) == 1
+        assert CHAT not in adapter._stream_states  # sealed: the next turn opens a fresh stream
+
+    def test_undisplayed_tail_keeps_only_what_was_never_shown(self):
+        assert _undisplayed_tail("评述：答案开头", "答案开头，以及结尾") == "，以及结尾"
+        assert _undisplayed_tail("", "全部") == "全部"
+        # A text that already extends what is shown needs no tail computed at all.
+        assert _undisplayed_tail("已显示", "已显示更多") == "已显示更多"
+        # An unrelated rewrite is appended whole rather than truncated to a coincidence.
+        assert _undisplayed_tail("完全不同的内容", "另一段话") == "另一段话"
 
 
 # --------------------------------------------------------------------------- #

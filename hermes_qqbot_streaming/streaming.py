@@ -16,8 +16,9 @@ Protocol rules — every one probed against the live platform, not inferred from
   EXTEND the previous one — repainting submitted content is refused with
   ``404 / 40007 已经提交的消息内容不可修改``. Hermes's native frames are not naturally monotonic
   (they carry a tool-progress block below a ``---`` rule that is cleared the moment the reply
-  continues), so this mixin keeps them monotonic and seals + reopens a fresh message when a frame
-  diverges anyway;
+  continues), so this mixin keeps them monotonic: it strips the gateway's typing cursor and the
+  tool-progress overlay, and when a frame diverges anyway it APPENDS only the part the client has
+  not seen instead of reopening a message with text already on screen;
 * ``input_state`` 1 = generating, 10 = done (closes the stream; the client stops spinning);
 * frames must be >= ~300 ms apart; rate-limit errors (HTTP 429 / biz code 50002) need exponential
   backoff;
@@ -129,6 +130,25 @@ def _stream_head(text: str) -> str:
     so a single long line cannot collapse the head to nothing."""
     cut = text.rfind("\n")
     return text[:cut] if cut >= len(text) // 2 else text
+
+
+def _undisplayed_tail(shown: str, incoming: str, *, min_overlap: int = 4) -> str:
+    """The part of *incoming* the client has not displayed yet.
+
+    ``shown`` is what the live message already displays; ``incoming`` is the text the consumer now
+    wants shown. The overlap is the LONGEST suffix of ``shown`` that also prefixes ``incoming``, so
+    the appended text is the smallest one that completes the reply. Cutting on a spurious short
+    match cannot lose content — the overlap is a suffix of ``shown``, so the result still carries
+    every character of ``incoming`` — which is why the floor is small: a short reply prefixed by a
+    short interim line overlaps by only a few characters.
+    """
+    if not shown or incoming.startswith(shown):
+        return incoming
+    for start in range(min(len(shown), 4000)):
+        candidate = shown[start:]
+        if len(candidate) >= min_overlap and incoming.startswith(candidate):
+            return incoming[len(candidate):]
+    return incoming
 
 
 @dataclass
@@ -245,23 +265,30 @@ class QQStreamMixin:
             return False
 
         if state.sent_any and body_text and not body_text.startswith(state.last_text):
-            # QQ lets a stream GROW but never repaint (404 / 40007). Hermes's frames stop being
-            # monotonic whenever tool-progress lines appear or clear, so seal what the client already
-            # shows and open a fresh stream message for the new content. Dropping the frame would
-            # freeze the reply; letting the error through would disable streaming for the chat.
-            logger.debug("[%s] Frame diverged from the streamed text — sealing and reopening", self._log_tag)
-            if not await self._seal_stream(state):
+            # QQ lets a stream GROW but never repaint (404 / 40007 已经提交的消息内容不可修改), so a frame
+            # that does not extend what the client shows cannot be sent as-is. Hermes's frames stop
+            # being monotonic when the consumer adopts the authoritative final
+            # (``GatewayStreamConsumer._adopt_final_text`` REPLACES the accumulated text, dropping the
+            # interim text it streamed before the reply): the client already displays
+            # ``state.last_text``, which is that interim text plus a prefix of the final. Appending
+            # only the part of the new text the client has not seen keeps the whole reply in ONE
+            # message — sealing and reopening a fresh one instead repeats everything already on
+            # screen, so the reply arrives twice, the second copy longer than the first.
+            tail = _undisplayed_tail(state.last_text, body_text)
+            grown = state.last_text + tail
+            if len(grown) > self.MAX_MESSAGE_LENGTH:
+                # Nothing left to grow into: close the stream on what the client shows and hand the
+                # complete reply back to the gateway's normal send path.
+                logger.info(
+                    "[%s] Diverged frame no longer fits the C2C stream budget (%d > %d chars) — "
+                    "closing the stream and delivering the full text as a normal message",
+                    self._log_tag, len(grown), self.MAX_MESSAGE_LENGTH)
+                await self._post_stream_frame(state, _stream_head(state.last_text), finalize=True)
                 states.pop(chat_id, None)
                 return False
-            state = self._open_stream_state(chat_id, turn_key, reply_to)
-            if state is None:
-                return False
-            if finalize:
-                # A fresh stream can't OPEN with a DONE frame: push the content, then seal it below.
-                if not await self._post_stream_frame(state, body_text, finalize=False):
-                    states.pop(chat_id, None)
-                    return False
-                state.last_text, state.last_sent_at, state.sent_any = body_text, time.monotonic(), True
+            logger.debug("[%s] Frame diverged from the streamed text — appending %d new char(s) "
+                         "instead of repainting", self._log_tag, len(tail))
+            body_text = grown
 
         if not await self._post_stream_frame(state, body_text, finalize=finalize):
             states.pop(chat_id, None)
@@ -285,16 +312,6 @@ class QQStreamMixin:
             msg_id=msg_id, event_id=msg_id, turn_key=turn_key)
         self._stream_states[chat_id] = state
         return state
-
-    async def _seal_stream(self, state: StreamState) -> bool:
-        """Close *state*'s stream message on the text the client already shows.
-
-        A DONE frame repeating the last accepted content is accepted (only *changing* submitted
-        content is refused), so sealing loses nothing: the new content goes into the fresh stream the
-        caller opens next."""
-        if not state.sent_any:
-            return True  # nothing was ever shown — there is no bubble to close
-        return await self._post_stream_frame(state, state.last_text, finalize=True)
 
     async def _post_stream_frame(self, state: StreamState, text: str, *, finalize: bool) -> bool:
         """POST one frame with backoff on rate limits; a permanent rejection disables streaming for
