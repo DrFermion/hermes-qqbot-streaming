@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-qqbot-streaming"
+version = "1.0.0"
+description = "QQ Bot C2C native streaming (typewriter replies) and reply-window hardening for Hermes Agent."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "DrFermion" }]
+keywords = ["hermes", "hermes-agent", "qqbot", "qq", "streaming", "plugin"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Topic :: Communications :: Chat",
+]
+
+# Hermes discovers pip-installed plugins through this entry point group.
+[project.entry-points."hermes_agent.plugins"]
+qqbot-streaming = "hermes_qqbot_streaming"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+[tool.setuptools]
+packages = ["hermes_qqbot_streaming"]
