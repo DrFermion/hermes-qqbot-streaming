@@ -13,7 +13,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 _PLUGIN_NAME = "qqbot-streaming"
 

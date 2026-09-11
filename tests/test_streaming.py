@@ -25,6 +25,7 @@ from hermes_qqbot_streaming.chunking import table_safe_split, table_safe_truncat
 from hermes_qqbot_streaming.streaming import (  # noqa: E402
     STREAM_STATE_DONE,
     STREAM_STATE_GENERATING,
+    _strip_frame_cursor,
     _strip_progress_overlay,
 )
 
@@ -148,6 +149,41 @@ class TestMonotonicFrames:
 
         assert [b["content_raw"] for b in recorder.bodies] == ["我来查一下", "我来查一下，结果如下"]
         assert len({b["msg_seq"] for b in recorder.bodies}) == 1  # still ONE message
+
+    def test_typing_cursor_is_stripped(self):
+        assert _strip_frame_cursor("你好 ▉") == "你好"
+        assert _strip_frame_cursor("你好 ▉", " ▉") == "你好"
+        assert _strip_frame_cursor("你好") == "你好"
+        # An unknown/unset cursor still loses its trailing block element.
+        assert _strip_frame_cursor("你好 ▌", "") == "你好"
+
+    @pytest.mark.asyncio
+    async def test_gateway_typing_cursor_never_reaches_the_stream(self):
+        """The gateway appends ``streaming.cursor`` (default " ▉") to every INTERIM native frame.
+
+        Because the suffix sits at the end of each frame and the text only differs before it, a
+        frame kept verbatim is not a prefix of its successor — QQ answers the repaint with
+        404 / 40007 and the mixin seals + reopens a fresh message per frame, each carrying the
+        whole reply again ("stacked copies", the reply growing message by message). The cursor is
+        a terminal affordance with no meaning in a QQ stream, so it is stripped.
+        """
+        adapter = _adapter()
+        recorder = _Recorder()
+        adapter._api_request = recorder
+
+        frames = ["你好 ▉", "你好，主人 ▉", "你好，主人！我在查日志 ▉"]
+        # The bare cursor alone breaks prefix-stability for every frame after the first.
+        assert [frame.startswith(frames[i - 1]) for i, frame in enumerate(frames)][1:] == [False, False]
+
+        for frame in frames:
+            await adapter.send_stream_frame(frame, chat_id=CHAT, reply_to=MSG_ID)
+            adapter._stream_states[CHAT].last_sent_at = 0.0
+
+        bodies = recorder.bodies
+        assert [b["content_raw"] for b in bodies] == ["你好", "你好，主人", "你好，主人！我在查日志"]
+        assert "▉" not in "".join(b["content_raw"] for b in bodies)
+        assert [b["index"] for b in bodies] == [1, 2, 3]
+        assert len({b["msg_seq"] for b in bodies}) == 1  # ONE message, no seal-and-reopen
 
     @pytest.mark.asyncio
     async def test_diverged_frame_seals_and_opens_a_fresh_stream(self):

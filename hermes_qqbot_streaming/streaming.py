@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os as _os
 import random
 import time
 from dataclasses import dataclass
@@ -65,6 +66,47 @@ _TRANSIENT_STREAM_BIZ_CODES = {40006, 40007, 40054005}
 # tool lines the moment real text arrives (``GatewayStreamConsumer._compose_frame_content``).
 _PROGRESS_OVERLAY_SEPARATOR = "\n\n---\n"
 
+# ── The gateway's typing cursor ──
+# ``GatewayStreamConsumer._push_update`` appends ``streaming.cursor`` (default " ▉") to every
+# INTERIM native frame; only the finalize frame carries none. A trailing suffix that differs
+# between consecutive frames makes every frame non-prefix — QQ answers a non-extending frame with
+# 404 / 40007 ("已经提交的消息内容不可修改"), and the mixin then seals + reopens a fresh message that
+# repeats the whole text ("stacked copies": the reply grows longer every message). A terminal
+# typing cursor means nothing inside a QQ stream, so frames are stripped of it before BOTH the
+# monotonic comparison and the send.
+_BLOCK_CURSOR_CHARS = frozenset(range(0x2580, 0x25A0))  # ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓
+
+
+def _resolve_frame_cursor() -> str:
+    """The configured cursor to strip; ``QQSTREAM_CURSOR_STRIP`` overrides (empty disables)."""
+    override = _os.getenv("QQSTREAM_CURSOR_STRIP")
+    if override is not None:
+        return override
+    try:
+        from gateway.config import DEFAULT_STREAMING_CURSOR as default_cursor
+    except Exception:  # pragma: no cover — Hermes always ships the constant
+        return ""
+    return default_cursor or ""
+
+
+_FRAME_CURSOR = _resolve_frame_cursor()
+
+
+def _strip_frame_cursor(text: str, cursor: str = "") -> str:
+    """Drop the gateway's trailing typing cursor from one frame."""
+    if not text:
+        return text
+    cursor = cursor or _FRAME_CURSOR
+    if cursor and text.endswith(cursor):
+        return text[: -len(cursor)]
+    # Cursor unset/unknown: a trailing block element (optionally after a space) is the typing
+    # cursor, not a reply ending.
+    if ord(text[-1]) in _BLOCK_CURSOR_CHARS:
+        end = len(text) - 1
+        if end and text[end - 1] == " ":
+            end -= 1
+        return text[:end]
+    return text
 
 def _strip_progress_overlay(text: str) -> str:
     """Drop the gateway's tool-progress overlay from a non-final frame.
@@ -148,7 +190,7 @@ class QQStreamMixin:
         if chat_id in getattr(self, "_stream_disabled_chats", ()):
             return False
 
-        formatted = self.format_message(text or "")
+        formatted = _strip_frame_cursor(self.format_message(text or ""))
         over_budget = len(formatted) > self.MAX_MESSAGE_LENGTH
         # A frame carrying reply text drops the tool-progress overlay: the overlay is cleared the
         # moment the reply continues, and that repaint is exactly what QQ refuses. The closing frame
