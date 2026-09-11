@@ -51,6 +51,9 @@ STREAM_CONTENT_TYPE_MARKDOWN = "markdown"
 # Platform throttle: the API rejects/ignores frames faster than this. Frames are cumulative,
 # so dropping an intermediate one loses nothing — the next frame carries the whole text.
 MIN_FRAME_INTERVAL_SECONDS = 0.32
+# The opening frame is what CREATES the message on the client: opening it on a couple of characters
+# makes QQ flash an unrenderable empty bubble ("该类型消息不支持查看") before the first real line.
+_MIN_OPEN_CHARS = 12
 _RATE_LIMIT_HTTP_STATUS = 429
 _RATE_LIMIT_BIZ_CODES = {50002}
 _RETRY_ATTEMPTS = 3
@@ -243,6 +246,17 @@ class QQStreamMixin:
                 return False
             body_text = state.last_text  # closing frame must carry content to render as DONE
 
+        if not finalize and not body_text.strip():
+            # A whitespace-only frame (the newline the model emits before its first token, plus the
+            # gateway's cursor) would create an EMPTY message on the client — QQ answers that with
+            # "该类型消息不支持查看". It carries nothing, so it is never sent.
+            return True
+        if not finalize and not state.sent_any and len(body_text.strip()) < _MIN_OPEN_CHARS:
+            # Hold the stream shut until there is a readable amount of text: the opening frame is
+            # what creates the message client-side. A reply too short to ever reach the threshold
+            # skips streaming and is delivered the normal way (it lands instantly regardless).
+            return True
+
         if not finalize and state.sent_any and (
             time.monotonic() - state.last_sent_at < MIN_FRAME_INTERVAL_SECONDS
         ):
@@ -357,8 +371,9 @@ class QQStreamMixin:
                 if stream_msg_id:
                     state.stream_msg_id = stream_msg_id
             if not opened_stream:
-                logger.info("[%s] C2C stream opened for %s (msg_seq=%d)",
-                            self._log_tag, state.chat_id, state.msg_seq)
+                logger.info("[%s] C2C stream opened for %s (msg_seq=%d, %d chars: %r)",
+                            self._log_tag, state.chat_id, state.msg_seq, len(text),
+                            " ".join(text[:70].split()))
             elif finalize:
                 logger.info("[%s] C2C stream closed after %d frame(s) (%d chars)",
                             self._log_tag, state.index, len(text))

@@ -34,6 +34,14 @@ CHAT = "OPENID_CHAT"
 MSG_ID = "MSG_IN"
 
 
+@pytest.fixture(autouse=True)
+def _lower_open_threshold(monkeypatch):
+    """Two-character frames are the norm in this file; the real opening threshold is a platform
+    artefact, covered by test_stream_opens_only_once_there_is_readable_text."""
+    import hermes_qqbot_streaming.streaming as streaming_module
+    monkeypatch.setattr(streaming_module, "_MIN_OPEN_CHARS", 1)
+
+
 def _adapter(**extra):
     adapter = StreamingQQAdapter(
         PlatformConfig(enabled=True, extra={"app_id": "a", "client_secret": "b", **extra}))
@@ -185,6 +193,35 @@ class TestMonotonicFrames:
         assert "▉" not in "".join(b["content_raw"] for b in bodies)
         assert [b["index"] for b in bodies] == [1, 2, 3]
         assert len({b["msg_seq"] for b in bodies}) == 1  # ONE message, no seal-and-reopen
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_frame_never_opens_a_stream(self):
+        """An empty message is what QQ answers with "该类型消息不支持查看"."""
+        adapter = _adapter()
+        recorder = _Recorder()
+        adapter._api_request = recorder
+
+        assert await adapter.send_stream_frame("\n ▉", chat_id=CHAT, reply_to=MSG_ID) is True
+        assert recorder.calls == []
+
+    @pytest.mark.asyncio
+    async def test_stream_opens_only_once_there_is_readable_text(self, monkeypatch):
+        import hermes_qqbot_streaming.streaming as streaming_module
+        monkeypatch.setattr(streaming_module, "_MIN_OPEN_CHARS", 12)
+
+        adapter = _adapter()
+        recorder = _Recorder()
+        adapter._api_request = recorder
+
+        # The opening frame creates the message client-side: a couple of characters makes QQ flash
+        # an unrenderable bubble, so the frame is held back.
+        assert await adapter.send_stream_frame("好 ▉", chat_id=CHAT, reply_to=MSG_ID) is True
+        assert recorder.calls == []
+
+        # Once a readable amount has arrived the stream opens — on that frame, exactly once.
+        assert await adapter.send_stream_frame("好，我这就去翻日志看看结果 ▉", chat_id=CHAT,
+                                               reply_to=MSG_ID) is True
+        assert [b["content_raw"] for b in recorder.bodies] == ["好，我这就去翻日志看看结果"]
 
     @pytest.mark.asyncio
     async def test_diverged_frame_grows_the_live_message_instead_of_reopening(self):
