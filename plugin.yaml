@@ -1,6 +1,6 @@
 name: qqbot-streaming
-version: 1.0.6
-description: "QQ Bot C2C native streaming for Hermes — replies type themselves out while the model generates, instead of landing as one wall of text. Also hardens the passive-reply window (msg_id), tool-progress frames and long-message chunking for QQ. Overrides the built-in `qqbot` platform adapter at load time; nothing in the Hermes tree is edited."
+version: 1.0.7
+description: "QQ Bot C2C native streaming for Hermes — replies type themselves out while the model generates, instead of landing as one wall of text. Also hardens the passive-reply window (msg_id), tool-progress frames and long-message chunking for QQ. Overrides the built-in `qqbot` platform adapter at load time; nothing in the Hermes tree is edited. KNOWN LIMITATION: the QQ client prefixes every stream message with 该类型消息暂不支持查看 and there is no way around it — no content shape avoids it (probed: markdown stripped, plain text, U+2028 line separators) and a stream message cannot be recalled (DELETE …/messages/{id} answers 400/40061001, while an ordinary message's does not). Streaming and a clean opening are mutually exclusive on this platform; disable with display.platforms.qqbot.streaming=false for clean messages."
 author: DrFermion
 kind: platform
 requires_hermes: ">=0.21"
