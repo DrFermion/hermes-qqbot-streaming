@@ -27,6 +27,7 @@ from hermes_qqbot_streaming.streaming import (  # noqa: E402
     STREAM_STATE_GENERATING,
     _strip_frame_cursor,
     _strip_progress_overlay,
+    _stream_plain_text,
     _undisplayed_tail,
 )
 
@@ -345,6 +346,42 @@ class TestOpening:
         assert await adapter.send_stream_frame("答案的第一行，还有第二行", chat_id=CHAT,
                                                reply_to=MSG_ID) is True
         assert [b["content_raw"] for b in recorder.bodies] == ["答案的第一行，还有第二行"]
+
+
+# --------------------------------------------------------------------------- #
+# plain-text frames
+# --------------------------------------------------------------------------- #
+
+class TestPlainTextFrames:
+    """A QQ stream may not carry markdown: the client decides from the CONTENT that the message is
+    markdown and then cannot render it (placeholder + raw source)."""
+
+    def test_markers_are_removed_and_the_projection_stays_prefix_stable(self):
+        frames = ["## 检查结果",
+                  "## 检查结果\n\n**重要**发现",
+                  "## 检查结果\n\n**重要**发现，还有 `code` 也在"]
+        prev = ""
+        for frame in frames:
+            shown = _stream_plain_text(frame)
+            assert shown.startswith(prev)          # QQ only ever grows a stream
+            assert not any(ch in shown for ch in "*`#")
+            prev = shown
+        assert prev == " 检查结果\n\n重要发现，还有 code 也在"
+
+    @pytest.mark.asyncio
+    async def test_frames_sent_to_qq_carry_no_markers(self):
+        adapter = _adapter()
+        recorder = _Recorder()
+        adapter._api_request = recorder
+
+        await adapter.send_stream_frame("## 标题\n\n**粗体**内容 ▉", chat_id=CHAT, reply_to=MSG_ID)
+        adapter._stream_states[CHAT].last_sent_at = 0.0
+        await adapter.send_stream_frame("## 标题\n\n**粗体**内容，还有 `代码` ▉", chat_id=CHAT,
+                                        reply_to=MSG_ID)
+
+        assert len(recorder.bodies) == 2
+        for body in recorder.bodies:
+            assert not any(ch in body["content_raw"] for ch in "*`#")
 
 
 # --------------------------------------------------------------------------- #

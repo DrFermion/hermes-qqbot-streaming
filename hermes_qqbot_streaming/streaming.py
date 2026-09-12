@@ -87,6 +87,24 @@ _PROGRESS_OVERLAY_SEPARATOR = "\n\n---\n"
 # monotonic comparison and the send.
 _BLOCK_CURSOR_CHARS = frozenset(range(0x2580, 0x25A0))  # ▀▁▂▃▄▅▆▇█▉▊▋▌▍▎▏▐░▒▓
 
+# Markdown markers a QQ stream may not carry: the client decides from the CONTENT that a message is
+# markdown, and then cannot render it — it prints "该类型消息不支持查看" and shows the raw source. Live
+# A/B on the same chat, both text-typed streams: plain text caused no complaint, the same text with
+# ``##``/``**``/list markers produced the placeholder plus the raw markup.
+_STREAM_MARKUP_CHARS = str.maketrans("", "", "*`#")
+
+
+def _stream_plain_text(text: str) -> str:
+    """Strip markdown markers from a frame as PLAIN text.
+
+    Only per-character deletions are safe here. A context-dependent stripper (for example
+    ``strip_markdown``) rewrites EARLIER frames once a marker completes — ``…**日`` still shows its
+    asterisks, ``…**日志**`` strips them — so frame N+1 no longer extends frame N, which is exactly
+    the repaint QQ refuses with 404 / 40007. Deleting a fixed character set is position-independent,
+    so the projection of a growing text stays prefix-stable.
+    """
+    return text.translate(_STREAM_MARKUP_CHARS)
+
 
 def _resolve_frame_cursor() -> str:
     """The configured cursor to strip; ``QQSTREAM_CURSOR_STRIP`` overrides (empty disables)."""
@@ -220,7 +238,7 @@ class QQStreamMixin:
         if chat_id in getattr(self, "_stream_disabled_chats", ()):
             return False
 
-        formatted = _strip_frame_cursor(self.format_message(text or ""))
+        formatted = _stream_plain_text(_strip_frame_cursor(self.format_message(text or "")))
         over_budget = len(formatted) > self.MAX_MESSAGE_LENGTH
         # A frame carrying reply text drops the tool-progress overlay: the overlay is cleared the
         # moment the reply continues, and that repaint is exactly what QQ refuses. The closing frame
