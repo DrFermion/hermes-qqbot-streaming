@@ -230,11 +230,30 @@ class QQStreamMixin:
         state = states.get(chat_id)
         if state is not None and turn_key and state.turn_key != turn_key:
             state = None  # new turn: new msg_seq/index/stream_msg_id
+        if state is None and not finalize:
+            # The FIRST frame of a turn is what CREATES the message on the client. Hermes composes a
+            # frame as ``<reply text>\n\n---\n<tool progress>``, so when a tool runs before the reply
+            # has emitted any text the frame is the tool-progress line ALONE — a transient overlay
+            # that Hermes clears the moment real text arrives. QQ stamps the message's type at
+            # creation, and a client cannot resolve an overlay-only opening: it flashes
+            # "该类型消息不支持查看" until real text lands. Hold this frame — the next one is cumulative
+            # (it carries everything this one had, plus whatever arrived since), so nothing is lost
+            # and the message is created from real reply text.
+            pending = self._pending_opening_frames()
+            if chat_id not in pending:
+                pending[chat_id] = body_text
+                return True
+            held = pending.pop(chat_id)
+            if not body_text.startswith(held):
+                logger.debug(
+                    "[%s] Opening frame (%d chars) was a transient overlay — creating the message "
+                    "from the reply text instead", self._log_tag, len(held))
         if state is None:
             if finalize:
                 # Nothing was streamed for this reply (short answer that arrived on the closing
                 # tick): a lone closing frame renders worse than a plain message, so defer to the
                 # gateway's normal send.
+                self._pending_opening_frames().pop(chat_id, None)
                 return False
             state = self._open_stream_state(chat_id, turn_key, reply_to)
             if state is None:
@@ -311,6 +330,14 @@ class QQStreamMixin:
         if finalize:
             states.pop(chat_id, None)  # the next turn opens a fresh stream
         return True
+
+    def _pending_opening_frames(self) -> Dict[str, str]:
+        """The first frame of the current turn, held until the next frame proves what it is."""
+        store = getattr(self, "_pending_opening_frames_store", None)
+        if store is None:
+            store = {}
+            self._pending_opening_frames_store = store
+        return store
 
     def _open_stream_state(
         self, chat_id: str, turn_key: str, reply_to: Optional[str],

@@ -35,6 +35,16 @@ MSG_ID = "MSG_IN"
 
 
 @pytest.fixture(autouse=True)
+def _prewarmed_turn(monkeypatch):
+    """A stream opens on the SECOND frame of a turn (the first is held in case it is the transient
+    tool-progress overlay — see QQStreamMixin.send_stream_frame). These tests exercise frames from an
+    already-open turn, so the per-turn hold is pre-seeded; the hold itself is covered by
+    TestOpening.test_opening_frame_is_held_until_it_is_not_an_overlay."""
+    monkeypatch.setattr(StreamingQQAdapter, "_pending_opening_frames",
+                        lambda self: {CHAT: ""})
+
+
+@pytest.fixture(autouse=True)
 def _lower_open_threshold(monkeypatch):
     """Two-character frames are the norm in this file; the real opening threshold is a platform
     artefact, covered by test_stream_opens_only_once_there_is_readable_text."""
@@ -270,6 +280,68 @@ class TestMonotonicFrames:
         assert _undisplayed_tail("已显示", "已显示更多") == "已显示更多"
         # An unrelated rewrite is appended whole rather than truncated to a coincidence.
         assert _undisplayed_tail("完全不同的内容", "另一段话") == "另一段话"
+
+
+# --------------------------------------------------------------------------- #
+# the opening frame
+# --------------------------------------------------------------------------- #
+
+class TestOpening:
+    """The first frame of a turn is what CREATES the message on the client."""
+
+    @pytest.fixture(autouse=True)
+    def _no_prewarm(self, monkeypatch):
+        """Defeat the module fixture: these tests exercise the per-turn hold itself, so the mixin's
+        real (persistent-per-adapter) store is used."""
+        from hermes_qqbot_streaming.streaming import QQStreamMixin
+        monkeypatch.setattr(StreamingQQAdapter, "_pending_opening_frames",
+                            QQStreamMixin._pending_opening_frames)
+
+    @pytest.mark.asyncio
+    async def test_opening_frame_is_held_until_it_is_not_an_overlay(self):
+        """A tool that runs before the reply emits text makes the first frame the tool-progress line
+        ALONE — a transient overlay Hermes clears the moment real text arrives. QQ stamps the
+        message's type at creation, so an overlay-only opening leaves the client flashing
+        "该类型消息不支持查看" until real text lands."""
+        adapter = _adapter()
+        recorder = _Recorder()
+        adapter._api_request = recorder
+
+        # Frame 1: the tool-progress overlay alone — held, nothing created on the client.
+        assert await adapter.send_stream_frame('💻 Running L="ls" ▉', chat_id=CHAT,
+                                               reply_to=MSG_ID) is True
+        assert recorder.calls == []
+
+        # Frame 2: the reply text arrives and the overlay moves below the rule.
+        assert await adapter.send_stream_frame('好的，我这就去查日志\n\n---\n💻 Running L="ls" ▉',
+                                               chat_id=CHAT, reply_to=MSG_ID) is True
+        bodies = recorder.bodies
+        assert [b["content_raw"] for b in bodies] == ["好的，我这就去查日志"]
+        assert len({b["msg_seq"] for b in bodies}) == 1
+
+    @pytest.mark.asyncio
+    async def test_held_frame_alone_defers_to_the_normal_send(self):
+        """A reply that never produces a second frame was too short to stream anyway."""
+        adapter = _adapter()
+        recorder = _Recorder()
+        adapter._api_request = recorder
+
+        await adapter.send_stream_frame("短消息", chat_id=CHAT, reply_to=MSG_ID)
+        assert await adapter.send_stream_frame("短消息", chat_id=CHAT, reply_to=MSG_ID,
+                                               finalize=True) is False
+        assert recorder.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_second_frame_that_extends_the_first_opens_on_it(self):
+        """With no tool in play both frames are reply text; the second is cumulative."""
+        adapter = _adapter()
+        recorder = _Recorder()
+        adapter._api_request = recorder
+
+        await adapter.send_stream_frame("答案的第一行", chat_id=CHAT, reply_to=MSG_ID)
+        assert await adapter.send_stream_frame("答案的第一行，还有第二行", chat_id=CHAT,
+                                               reply_to=MSG_ID) is True
+        assert [b["content_raw"] for b in recorder.bodies] == ["答案的第一行，还有第二行"]
 
 
 # --------------------------------------------------------------------------- #

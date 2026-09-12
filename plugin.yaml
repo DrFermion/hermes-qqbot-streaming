@@ -1,5 +1,5 @@
 name: qqbot-streaming
-version: 1.0.3
+version: 1.0.4
 description: "QQ Bot C2C native streaming for Hermes — replies type themselves out while the model generates, instead of landing as one wall of text. Also hardens the passive-reply window (msg_id), tool-progress frames and long-message chunking for QQ. Overrides the built-in `qqbot` platform adapter at load time; nothing in the Hermes tree is edited."
 author: DrFermion
 kind: platform
