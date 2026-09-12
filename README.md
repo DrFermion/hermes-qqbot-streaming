@@ -110,6 +110,7 @@ Suppressing normal final send for session ... (streamed=True content_delivered=T
 - **只有私聊能流**：群/频道没有 `stream_messages`，群里回复仍是一次性消息（平台限制，不是插件能绕的）。
 - **流式必须挂在真实入站消息的回复窗口上**：机器人自己造不出第一条，所以"重启网关后日志里没有 stream"通常只是没人发过消息。
 - **超长回复**（> `MAX_MESSAGE_LENGTH`，QQ 用 4000 字符）走普通分段发送：能保证不丢字，但不是打字机效果。
+- **纯文本**：流式期间发的是纯文本——`*`、`` ` ``、`#` 会被剔掉（用逐字符删除，保证帧始终是前缀延伸）。QQ 客户端是看**内容**判断「这是 markdown 消息」的，判成之后它就渲染不了：先冒一句「该类型消息不支持查看」，再把原始源码摊出来。这就是曾经每次回复都闪一下的根因（已由 live A/B 证实：同样的纯文本不闪，带上 `##`/`**` 就闪）。代价是流式那条没有排版。
 - **版本兼容**：如果将来 Hermes 内置了 QQ 流式，本插件会自动改走"加固"部分（不再叠加 mixin，避免 MRO 冲突）。
 - 平台条目一旦注册，**创建适配器失败时 Hermes 不会回退到内置适配器**（`run_adapters.py` 的设计）。所以别在缺依赖（aiohttp/httpx）的环境里启用本插件。
 
@@ -120,7 +121,7 @@ Suppressing normal final send for session ... (streamed=True content_delivered=T
 ~/.hermes/hermes-agent/venv/Scripts/python.exe -m pytest tests/ -q
 ```
 
-测试覆盖：帧协议（同 msg_seq / index 递增 / stream_msg_id 接力 / 收尾帧）、单调性（遮罩剥离、分叉封口重开）、超预算交回、限流与永久错误分类、被动回复兜底、表格切分。
+测试覆盖：帧协议（同 msg_seq / index 递增 / stream_msg_id 接力 / 收尾帧）、单调性（遮罩剥离、光标剥离、纯文本投影、分叉时**只追加未显示部分**而不重开消息）、首帧扣留、超预算交回、限流与永久错误分类、被动回复兜底、表格切分。
 
 ## 许可
 
