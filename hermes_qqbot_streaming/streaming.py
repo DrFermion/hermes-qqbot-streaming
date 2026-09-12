@@ -46,7 +46,14 @@ STREAM_PATH_TEMPLATE = "/v2/users/{openid}/stream_messages"
 STREAM_INPUT_MODE_REPLACE = "replace"
 STREAM_STATE_GENERATING = 1
 STREAM_STATE_DONE = 10
+# A stream's content type. The endpoint accepts BOTH (live probe 2026-09-12: HTTP 200 on the opening
+# and on the DONE frame for either). What the CLIENT cannot render is a MARKDOWN message that is
+# still a stream: it answers "该类型消息不支持查看" for the whole generation, so every reply flashed
+# that line before its first frame settled. Live A/B on the same chat: the markdown-typed test
+# flashed, the text-typed one did not. Frames go out as plain text.
+STREAM_CONTENT_TYPE_TEXT = "text"
 STREAM_CONTENT_TYPE_MARKDOWN = "markdown"
+STREAM_CONTENT_TYPE = STREAM_CONTENT_TYPE_TEXT
 
 # Platform throttle: the API rejects/ignores frames faster than this. Frames are cumulative,
 # so dropping an intermediate one loses nothing — the next frame carries the whole text.
@@ -361,7 +368,7 @@ class QQStreamMixin:
         body: Dict[str, Any] = {
             "input_mode": STREAM_INPUT_MODE_REPLACE,
             "input_state": STREAM_STATE_DONE if finalize else STREAM_STATE_GENERATING,
-            "content_type": STREAM_CONTENT_TYPE_MARKDOWN,
+            "content_type": STREAM_CONTENT_TYPE,
             "content_raw": text,
             "event_id": state.event_id,
             "msg_id": state.msg_id,

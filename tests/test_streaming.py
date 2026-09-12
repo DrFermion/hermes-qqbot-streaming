@@ -120,7 +120,10 @@ class TestFrames:
         assert len({b["msg_seq"] for b in (first, second, last)}) == 1
         assert [b["input_state"] for b in (first, second, last)] == [
             STREAM_STATE_GENERATING, STREAM_STATE_GENERATING, STREAM_STATE_DONE]
-        assert first["input_mode"] == "replace" and first["content_type"] == "markdown"
+        assert first["input_mode"] == "replace"
+        # Plain text: a MARKDOWN stream message is what the client answers with
+        # "该类型消息不支持查看" for the whole generation.
+        assert first["content_type"] == "text"
         assert first["msg_id"] == MSG_ID and first["event_id"] == MSG_ID
         assert "stream_msg_id" not in first      # the first response id anchors the rest
         assert second["stream_msg_id"] == "stream-1"
